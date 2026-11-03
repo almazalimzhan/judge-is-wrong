@@ -1,0 +1,7 @@
+{
+  "backend": "mock",
+  "max_tokens": 2048,
+  "timeout_seconds": 90,
+  "retries": 2,
+  "send_seed": false
+}

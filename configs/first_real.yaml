@@ -1,0 +1,24 @@
+{
+  "seed": 42,
+  "dataset": {
+    "name": "mbpp", "path": "data/mbpp.jsonl", "limit": 75,
+    "sha256": "ccf64ceae9c5403bf50a044cb6d505bfd2a2963ee58338ba268fd65beab92a9f",
+    "exclude_task_ids": ["mbpp/180"],
+    "exclusion_rationale": "Reference preflight: platform-sensitive exact floating-point assertions fail on development macOS/Python. No candidate outcomes used. See docs/datasets.md."
+  },
+  "models_file": "configs/models.yaml",
+  "models": {"backend": "openai_compatible"},
+  "rounds": 3,
+  "conditions": ["baseline", "adversarial", "ensemble", "execution", "baseline_no_feedback"],
+  "ensemble_size": 3,
+  "temperatures": {"proposer": 0.2, "judge": 0.0, "critic": 0.0, "ensemble": 0.7},
+  "execution": {"backend": "auto", "timeout_seconds": 2, "memory_mb": 256},
+  "output_format": "csv",
+  "cache_dir": ".cache/model_calls",
+  "hypotheses": {
+    "H1": "Feedback-driven optimization increases J faster than fractional G (positive mean delta gap). Compare baseline against no-feedback revisions.",
+    "H2": "Adversarial critique reduces overestimation relative to baseline.",
+    "H3": "Independent ensembles reduce variance and evaluation gap. Member disagreement alone cannot establish estimator variance reduction.",
+    "H4": "Public execution evidence improves binary calibration and reduces false approval."
+  }
+}
