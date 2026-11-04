@@ -16,6 +16,15 @@ The project connects conceptually to weak supervision, evaluator exploitation, r
 
 Primary data are the official MBPP test tasks, deterministically sampled. One public test per task is exposed and remaining tests are withheld; this changes the original benchmark protocol. G is hidden-test fraction passed and Y indicates all hidden tests passed. J predicts Y; E=J−G is a diagnostic gap with different semantics from a calibration error. The same initial solution seeds all condition trajectories; three revisions follow. Only evaluator feedback is returned to the proposer. Hidden outcomes are recorded solely for offline analysis. A revision control receives no evaluator scores or summaries.
 
+The revised implementation supports independently seeded proposer replicates;
+initial candidates are shared within each replicate, and task-level bootstrap
+clusters retain all replicates. A separate frozen-candidate experiment scores
+an immutable corpus with four evaluators and makes no proposer calls. It
+estimates paired evaluator-quality differences, independently of the iterative
+feedback-policy comparison. The optional pinned HumanEval+ protocol uses a
+denser upstream harness but binary whole-harness G; it must not be pooled with
+MBPP fractional scores. No hidden tests are generated from confirmatory failures.
+
 ## 4. Evaluator Conditions
 
 Single judge, ordinary critique then judge, adversarial critique then judge, independently requested judge ensemble, and judge with public execution evidence. Ensemble mean scores and majority approvals are primary aggregate outputs. Requests can have correlated errors. Intervention compute is not matched; final-candidate comparisons include changes to candidate distribution.
@@ -34,7 +43,7 @@ Select J≥0.8 and G≤0.5; export candidate, public task, concise evaluation su
 
 ## 8. Limitations
 
-Code tasks are a proxy; tests are incomplete and MBPP hidden scores are coarse. Public benchmark contamination may affect both roles. Mock imperfections are synthetic. Model families may share biases. LLM judging differs from human oversight. Small samples, multiple comparisons and provider changes limit generalization. Sandboxed subprocesses do not make same-interpreter grading secure against malicious introspection. Stronger evaluator comparisons need independent capability measurement. Resources are not compute matched.
+Code tasks are a proxy; tests are incomplete and MBPP hidden scores are coarse. Public benchmark contamination may affect both roles. Mock imperfections are synthetic. Model families may share biases. LLM judging differs from human oversight. Small samples, multiple comparisons and provider changes limit generalization. The trusted controller and candidate use separate interpreters, but the function-value protocol supports a restricted subset of Python semantics; oracle-invalid rows cannot enter correctness analysis. OS/native-code attacks remain outside the supported threat model. Stronger evaluator comparisons need independent capability measurement. Resources are not compute matched.
 
 ## 9. Discussion
 
@@ -42,4 +51,4 @@ A positive gap increase would support an evaluation mismatch in this protocol. I
 
 ## 10. Future Work
 
-Cross-evaluate a frozen candidate corpus; repeat seeds; compare independently measured evaluator strength; use cross-family judges, compute-matched conditions, larger held-out suites, blinded human annotations, and contamination-resistant fresh tasks.
+Run real-model replicated trajectories and the separate frozen comparison; compare independently measured evaluator strength; use cross-family judges, compute-matched conditions, blinded human annotations, and contamination-resistant fresh tasks. These empirical comparisons remain pending.

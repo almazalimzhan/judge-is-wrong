@@ -183,7 +183,9 @@ class Evaluator:
             )
             # Restrict evidence even if the caller supplies a broader result dictionary.
             payload["public_execution_evidence"] = {
-                k: evidence[k] for k in ("total", "passed", "status_counts") if k in evidence
+                k: evidence[k]
+                for k in ("total", "passed", "status_counts", "oracle_valid")
+                if k in evidence
             }
         count = self.ensemble_size if condition == "ensemble" else 1
         decisions: list[JudgeDecision] = []

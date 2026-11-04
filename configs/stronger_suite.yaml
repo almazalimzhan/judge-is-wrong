@@ -1,0 +1,18 @@
+{
+  "seed": 42,
+  "replicates": 2,
+  "dataset": {
+    "name": "humaneval_plus", "path": "data/HumanEvalPlus-OriginFmt-v0.1.10.jsonl.gz", "limit": 5,
+    "sha256": "daa7661c8189924068069b0872a440b491edb60f8bdf431d5957adc88d18bae5"
+  },
+  "models_file": "configs/models.yaml",
+  "models": {"backend": "openai_compatible"},
+  "rounds": 1,
+  "conditions": ["baseline", "adversarial", "ensemble", "execution", "baseline_no_feedback"],
+  "ensemble_size": 3,
+  "temperatures": {"proposer": 0.7, "judge": 0.0, "critic": 0.0, "ensemble": 0.7},
+  "execution": {"backend": "auto", "timeout_seconds": 10, "memory_mb": 256},
+  "output_format": "csv",
+  "cache_dir": ".cache/model_calls",
+  "purpose": "Optional stronger-suite pilot; run reference preflight first. Whole expanded harness is one unit, so G is binary. Do not pool with MBPP fractional scores."
+}

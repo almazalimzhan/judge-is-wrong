@@ -31,6 +31,20 @@ def row(
 
 
 class MetricTests(unittest.TestCase):
+    def test_invalid_oracles_cannot_become_correctness_labels(self) -> None:
+        base = row("a", 0.9, 1, True)
+        invalid = [
+            dict(base, ground_truth_valid=False),
+            dict(base, ground_truth_valid="False"),
+            dict(base, hidden_test_result={"oracle_valid": False}),
+            dict(base, hidden_test_result={"status_counts": {"integrity_violation": 1}}),
+            dict(base, hidden_test_result={"status_counts": {"unsupported_protocol": 1}}),
+            dict(base, hidden_test_result='{"oracle_valid": false}'),
+        ]
+        for observation in invalid:
+            with self.subTest(observation=observation), self.assertRaises(ValueError):
+                compute_metrics([observation])
+
     def test_classification_denominators(self) -> None:
         rows = [
             row("a", 0.9, 1, True),
@@ -39,6 +53,7 @@ class MetricTests(unittest.TestCase):
             row("d", 0.1, 0.5, False),
         ]
         result = compute_metrics(rows)
+        self.assertEqual(result["binary_prediction_error"], 0.5)
         for key in (
             "false_approval_rate",
             "false_rejection_rate",

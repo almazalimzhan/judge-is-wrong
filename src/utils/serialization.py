@@ -13,9 +13,9 @@ JSON_FIELDS = {
     "ensemble_details",
     "ensemble_judgments",
 }
-BOOL_FIELDS = {"judge_binary", "pass_at_1"}
+BOOL_FIELDS = {"judge_binary", "pass_at_1", "ground_truth_valid"}
 FLOAT_FIELDS = {"judge_score", "ground_truth_score", "evaluation_gap"}
-INT_FIELDS = {"round", "seed", "replicate"}
+INT_FIELDS = {"round", "seed", "replicate", "replicate_seed"}
 OPTIONAL_FLOAT_FIELDS = {"ensemble_mean", "ensemble_median", "ensemble_variance"}
 
 
@@ -115,7 +115,9 @@ def read_completed_results(path: Path) -> list[dict]:
         raise ValueError("partial.csv is an interrupted run; analyze completed results only")
     rows = read_results(path)
     manifest_path = path.parent / (
-        "latest.manifest.json" if path.stem == "latest" else "manifest.json"
+        f"{path.stem}.manifest.json"
+        if path.stem in {"latest", "latest_frozen"}
+        else "manifest.json"
     )
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -126,3 +128,10 @@ def read_completed_results(path: Path) -> list[dict]:
         if {row.get("experiment_id") for row in rows} != {manifest.get("experiment_id")}:
             raise ValueError("Results and manifest identify different experiments")
     return rows
+
+
+def result_experiment_type(rows: list[dict]) -> str:
+    kinds = {row.get("experiment_type", "iterative") for row in rows}
+    if len(kinds) != 1 or not kinds <= {"iterative", "frozen_candidates"}:
+        raise ValueError("Analyze a single supported experiment type at a time")
+    return next(iter(kinds))

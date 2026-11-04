@@ -21,6 +21,7 @@ SUMMARY_METRICS = (
     "ece",
     "pass_at_1_rate",
     "accuracy",
+    "binary_prediction_error",
     "precision",
     "recall",
     "f1",
@@ -122,10 +123,12 @@ def paired_comparisons(
         "mean_judge_score",
         "mean_ground_truth",
         "mean_gap",
+        "mean_binary_gap",
         "false_approval_rate",
         "brier_score",
         "ece",
         "accuracy",
+        "binary_prediction_error",
     )
     result = []
     for condition in conditions:

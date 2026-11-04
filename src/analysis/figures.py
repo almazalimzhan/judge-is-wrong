@@ -62,7 +62,7 @@ def generate_figures(rows: list[Row], analysis: dict[str, Any], output_dir: Path
         if provenance["run_kind"] == "mock"
         else ""
     )
-    note = f"{caution}Final round {final_round}; {provenance['n_tasks']} task clusters. Intervals: 95% task bootstrap."
+    note = f"{caution}Final round {final_round}; {provenance['n_tasks']} task clusters, {provenance.get('n_replicates_per_task', 1)} replicates/task. Intervals: 95% task bootstrap."
     palette = {condition: COLORS.get(condition, "#51565B") for condition in conditions}
     paths: list[Path] = []
 
@@ -429,7 +429,7 @@ def generate_figures(rows: list[Row], analysis: dict[str, Any], output_dir: Path
                 label="Hidden fraction G",
             )
             ax.set(
-                title=f"{chosen['task_id']} · {LABELS.get(chosen['condition'], chosen['condition'])}",
+                title=f"{chosen['task_id']} · replicate {chosen.get('replicate', 0)} · {LABELS.get(chosen['condition'], chosen['condition'])}",
                 xlabel="Proposer revision round",
                 ylabel="Score",
             )

@@ -15,6 +15,9 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=ROOT / "configs/experiment.yaml")
     parser.add_argument("--limit", type=int, help="Override task count for a pilot")
     parser.add_argument("--rounds", type=int, help="Override number of revisions")
+    parser.add_argument(
+        "--replicates", type=int, help="Override independently seeded trajectories per task"
+    )
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     cfg = load_config(args.config)
@@ -22,6 +25,8 @@ def main() -> None:
         cfg.setdefault("dataset", {})["limit"] = args.limit
     if args.rounds is not None:
         cfg["rounds"] = args.rounds
+    if args.replicates is not None:
+        cfg["replicates"] = args.replicates
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     output = run_experiment(cfg, ROOT, output_dir=args.output_dir)
     print(f"Saved complete experiment: {output}")

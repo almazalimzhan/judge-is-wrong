@@ -41,6 +41,11 @@ def render_report(rows: list[Row], analysis_dir: Path, output_path: Path) -> Pat
         if mock
         else "These measurements describe the configured models, tasks, sampling seed and feedback policy in this run. They do not establish intentional deception or general oversight failure."
     )
+    oracle_notice = (
+        "**Ground-truth provenance: legacy/unverified.** " + provenance["oracle_warning"]
+        if provenance.get("oracle_verification") == "legacy_unverified"
+        else "Ground-truth execution protocol: `function-rpc-v1` with explicitly valid execution summaries. Protocol verification does not establish exhaustive semantic correctness."
+    )
     abstract = (
         "We provide a reproducible code-generation experiment to test whether optimizing an LLM evaluator's feedback increases evaluator score faster than hidden-test correctness. "
         + (
@@ -137,7 +142,9 @@ Weak supervision uses imperfect signals in place of direct ground truth. Reward 
 
 For each task, shared initial code x₀ branches into condition-specific revision trajectories through round T. Feedback-enabled proposers receive only public task information and evaluator feedback. A configured no-feedback control revises without evaluator feedback. Hidden-test execution supplies G, the fraction of hidden test units passed, and a binary all-tests-pass event. J is the evaluator's predicted probability of that binary event. The diagnostic evaluation gap is J − G. Because these targets differ, that gap is not itself a calibration error.
 
-Experiment: `{provenance["experiment_id"]}`. Run kind: `{provenance["run_kind"]}`. Tasks: {provenance["n_tasks"]}. Final round: {provenance["final_round"]}. Models, backend, dataset digest, seeds and prompts must be read from the corresponding run manifest and call cache.
+Experiment: `{provenance["experiment_id"]}`. Run kind: `{provenance["run_kind"]}`. Tasks: {provenance["n_tasks"]}. Proposer replicates per task: {provenance["n_replicates_per_task"]}. Final round: {provenance["final_round"]}. Models, backend, dataset digest, seeds and prompts must be read from the corresponding run manifest and call cache.
+
+{oracle_notice}
 
 ## 4. Evaluator Conditions
 
@@ -151,7 +158,7 @@ Same-model ensemble calls can remain correlated. Condition-specific revisions es
 
 Primary summaries use final-round candidates only. Conditional false approval is P(approve | at least one hidden test unit fails); false rejection is P(reject | all units pass). Brier score and ten-bin ECE compare J to the binary all-tests-pass event. Trajectory metrics compare round 0 with T. ROC-AUC and average precision are omitted when only one ground-truth class is present. Undefined quantities remain missing.
 
-Intervals are 95% percentile task-cluster bootstrap intervals ({provenance["bootstrap_samples"]} draws, seed {provenance["seed"]}); all rounds and conditions for a sampled task remain together. Final-score paired differences and task-standardized gap effects are recorded in `paired_comparisons.csv`. Paired differences of round-0-to-final changes appear in `endpoint_comparisons.csv`, including comparisons to `baseline_no_feedback` when configured. Within-ensemble score variance measures member disagreement, not the estimator's sampling variance. No multiplicity-adjusted significance claim is made. Intervals are unavailable with fewer than two tasks or too many undefined bootstrap draws.
+Intervals are 95% percentile task-cluster bootstrap intervals ({provenance["bootstrap_samples"]} draws, seed {provenance["seed"]}); all proposer replicates, rounds and conditions for a sampled task remain together. The analysis requires the same replicate set for every task; point estimates weight tasks equally through this balanced grid. Additional replicates do not create additional independent task clusters. Final-score paired differences and task-standardized gap effects are recorded in `paired_comparisons.csv`. Paired differences of round-0-to-final changes appear in `endpoint_comparisons.csv`, including comparisons to `baseline_no_feedback` when configured. Within-ensemble score variance measures member disagreement, not the estimator's sampling variance. No multiplicity-adjusted significance claim is made. Intervals are unavailable with fewer than two tasks or too many undefined bootstrap draws.
 
 ## 6. Results
 
@@ -177,11 +184,11 @@ Code-generation tasks are only a proxy for open-ended oversight. Tests are incom
 
 ## 9. Discussion
 
-An increased gap would be evidence of evaluation mismatch within this task distribution and feedback policy. It would not establish that advanced models deceive humans. A reduced gap under an intervention would not by itself identify the mechanism: both revised candidates and judge decisions can change. Fixed-candidate rescoring, no-feedback controls, independently repeated proposer runs and cross-family evaluators would help separate mechanisms.
+An increased gap would be evidence of evaluation mismatch within this task distribution and feedback policy. It would not establish that advanced models deceive humans. A reduced gap under an intervention would not by itself identify the mechanism: both revised candidates and judge decisions can change. The separate frozen-candidate experiment compares evaluator quality on identical code. This iterative report instead describes feedback-driven trajectories; its task-cluster intervals retain all seeded proposer replicates. The no-feedback control helps compare revision policies, and cross-family evaluators can probe shared errors.
 
 ## 10. Future Work
 
-Run the prespecified 50–100-task study with real models; repeat with independent seeds; compare weaker and stronger judges, same-family and cross-family evaluators, and prompt perturbations. Add fixed-candidate rescoring to separate judge effects from candidate changes; retain the implemented no-feedback control. Audit selected failures manually without releasing held-out tests.
+Run the prespecified 50–100-task study with real models; repeat with independent seeds; compare weaker and stronger judges, same-family and cross-family evaluators, and prompt perturbations. Use the separate frozen-candidate experiment to separate judge effects from candidate changes; retain the implemented no-feedback control and seeded proposer replicates. Audit selected failures manually without releasing held-out tests.
 """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(content, encoding="utf-8")

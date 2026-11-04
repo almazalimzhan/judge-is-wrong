@@ -1,0 +1,15 @@
+{
+  "seed": 42,
+  "experiment_type": "frozen_candidates",
+  "dataset": {"name": "toy", "limit": 3},
+  "models_file": "configs/models.yaml",
+  "models": {"backend": "mock"},
+  "rounds": 0,
+  "conditions": ["baseline", "adversarial", "ensemble", "execution"],
+  "ensemble_size": 3,
+  "temperatures": {"judge": 0.0, "critic": 0.0, "ensemble": 0.7},
+  "execution": {"backend": "auto", "timeout_seconds": 2, "memory_mb": 256},
+  "output_format": "csv",
+  "cache_dir": ".cache/model_calls",
+  "purpose": "Offline validation only. Use all initial candidates from the standard three-task, two-replicate mock smoke run. No proposer calls."
+}

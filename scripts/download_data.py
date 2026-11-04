@@ -28,6 +28,16 @@ DATASETS = {
         "paper": "https://arxiv.org/abs/2107.03374",
         "license_source": "https://raw.githubusercontent.com/openai/human-eval/master/LICENSE",
     },
+    "humaneval_plus": {
+        "url": "https://github.com/evalplus/humanevalplus_release/releases/download/v0.1.10/HumanEvalPlus-OriginFmt.jsonl.gz",
+        "filename": "HumanEvalPlus-OriginFmt-v0.1.10.jsonl.gz",
+        "license": "Apache-2.0; underlying HumanEval MIT",
+        "attribution": "Liu et al. (2023), EvalPlus; built on Chen et al. (2021), HumanEval",
+        "paper": "https://arxiv.org/abs/2305.01210",
+        "license_source": "https://raw.githubusercontent.com/evalplus/humanevalplus_release/68cd26d53a0dec69f85eafe1f82a2a74155a2bd6/LICENSE",
+        "suite_version": "v0.1.10",
+        "sha256": "daa7661c8189924068069b0872a440b491edb60f8bdf431d5957adc88d18bae5",
+    },
 }
 
 
@@ -52,7 +62,8 @@ def main() -> None:
         if len(data) > 10_000_000:
             raise ValueError("Unexpected benchmark size")
     digest = hashlib.sha256(data).hexdigest()
-    if args.sha256 and digest.lower() != args.sha256.lower():
+    expected = args.sha256 or info.get("sha256")
+    if expected and digest.lower() != expected.lower():
         raise ValueError("Dataset SHA256 mismatch; refusing to save")
     destination.write_bytes(data)
     metadata = {
@@ -65,10 +76,19 @@ def main() -> None:
     destination.with_suffix(destination.suffix + ".metadata.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
     )
-    if args.dataset == "humaneval":
+    if args.dataset in {"humaneval", "humaneval_plus"}:
         with urllib.request.urlopen(info["license_source"], timeout=30) as response:
             license_text = response.read(100_000).decode()
-        (args.output_dir / "HumanEval.LICENSE").write_text(license_text, encoding="utf-8")
+        license_filename = (
+            "HumanEval.LICENSE" if args.dataset == "humaneval" else "HumanEvalPlus.LICENSE"
+        )
+        (args.output_dir / license_filename).write_text(license_text, encoding="utf-8")
+        if args.dataset == "humaneval_plus":
+            with urllib.request.urlopen(
+                DATASETS["humaneval"]["license_source"], timeout=30
+            ) as response:
+                underlying_license = response.read(100_000).decode()
+            (args.output_dir / "HumanEval.LICENSE").write_text(underlying_license, encoding="utf-8")
     print(f"Saved {destination}\nSHA256: {digest}\nAttribution: {info['attribution']}")
 
 

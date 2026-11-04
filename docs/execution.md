@@ -2,8 +2,8 @@
 
 The executor **fails closed** if an OS isolation backend is unavailable. There is
 no `unsafe` execution option. Run `Executor.check_available()` before spending API
-calls. Each test runs in a fresh isolated Python process, with a fresh namespace
-and temporary directory. Candidate stdout and stderr are discarded. Results
+calls. Each test has a fresh trusted controller and an OS-sandboxed candidate
+process, in different directories. Candidate stdout and stderr are discarded. Results
 contain only pass counts and coarse failure categories.
 
 ## macOS
@@ -55,21 +55,58 @@ Only the macOS backend was exercised in the development environment; Docker
 support requires validation on the intended host. A missing daemon/image causes
 a preflight failure rather than a fallback to ordinary subprocess execution.
 
-## Integrity and remaining limitations
+## Ground-truth boundary: function-rpc-v1
 
-The worker writes a nonce-checked completion after executing the trusted tests.
-Successful process exit alone, printed fake verdicts, and a simple monkeypatch
-of `builtins.exec` do not produce a passing result. Wall time kills the entire
-local process group; Docker cleanup kills container children as well.
+The trusted controller compiles and executes benchmark tests. It never executes
+candidate source. The candidate process receives only candidate source and
+function-call arguments; hidden tests, expected values, nonce and verdict path
+stay in the controller. Its filesystem policy denies the controller directory.
+The controller makes assertions on decoded plain values, then writes the
+nonce-checked verdict. Candidate messages cannot directly declare a test passed.
+The candidate remains alive across calls within a test, retaining ordinary
+function global state. Each next test starts fresh.
 
-**OS host isolation is different from tamper-proof ground truth.** Candidate code
-and tests still share one Python interpreter. A deliberately malicious candidate
-can inspect stack frames or mutate interpreter state; the random completion
-nonce is a reliability guard, not a cryptographic separation from that code.
-This runner does not establish oracle integrity against an adversarial Python
-program trying to subvert the harness. Review anomalous candidates and use a
-stronger function-call RPC/hypervisor harness for that threat model. The proposer
-is asked to optimize evaluator feedback, not to attack the test harness.
+The wire format supports exact builtin scalar/container values with bounded
+size/depth, using JSON tags, never pickle or arbitrary object deserialization.
+NumPy scalars from trusted tests are normalized to builtin values. Custom
+objects, generators, argument mutation, cyclic/shared container inputs and
+observable object identity are unsupported. These cases produce
+`unsupported_protocol` with `oracle_valid=false`; they are not usable
+correctness labels. All statistical entry points reject such rows. Numeric
+scores in invalid raw diagnostic rows must not be interpreted as correctness.
+
+Because candidate code shares an interpreter with the candidate-side transport,
+separation alone cannot protect that transport against unrestricted reflection.
+Before execution a conservative AST policy rejects runtime-control imports,
+private/reflection attributes, dynamic execution, file I/O, classes and
+generators. Imports use facades for a closed list of standard-library modules;
+candidate builtins exclude reflective and I/O capabilities. Runtime audit hooks
+mark prohibited operations as sticky integrity violations, even if candidate
+code catches the exception. Policy rejection does not establish malicious intent;
+it can also reject legitimate Python outside the supported subset.
+
+Regression tests cover the original frame/verdict attack, transport encoder
+replacement, builtin/namespace modification, runtime controls, unsupported
+values/aliases/mutation and malformed trusted setup. OS filesystem/network
+denial is also tested directly, independently of the feature policy.
+
+**This is not a proof of secure execution for arbitrary adversarial Python.**
+Obfuscated policy bypasses, native/runtime vulnerabilities, attacks on the
+transport implementation, OS/container escapes and resource exhaustion remain
+unsupported threat models. A hardened adversarial service requires a separately
+audited restricted runtime or VM. The trusted benchmark source and installed
+test dependencies are assumed trustworthy. Do not run arbitrary uploaded test
+code as trusted benchmark code.
+
+The wall watchdog includes a bounded startup allowance (1.5 seconds on macOS,
+7 seconds with Docker) in addition to the configured test budget; CPU limits
+are applied separately. Whole-suite timings therefore differ from official
+benchmark runners. Wall timeout kills the local process group, and Docker
+cleanup removes its container. No unsafe same-interpreter fallback exists.
+
+Earlier result files from the same-interpreter harness remain readable for
+compatibility but reports explicitly label them `legacy_unverified`. Re-execute
+their candidates with this protocol before interpreting correctness labels.
 
 Neither backend is a proof against OS/container vulnerabilities or resource
 exhaustion. macOS memory accounting is explicitly incomplete. Large workloads

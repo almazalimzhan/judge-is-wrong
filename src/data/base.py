@@ -61,6 +61,12 @@ def load_tasks(
         if path is None:
             raise ValueError("HumanEval requires a local JSONL[.gz] path")
         tasks = load_humaneval(Path(path))
+    elif dataset == "humaneval_plus":
+        from .humaneval_plus import load_humaneval_plus
+
+        if path is None:
+            raise ValueError("HumanEval+ requires a local original-format JSONL[.gz] path")
+        tasks = load_humaneval_plus(Path(path))
     else:
         raise ValueError(f"Unknown dataset: {dataset!r}")
     # Local RNG, stable input order: no process-global randomness is modified.

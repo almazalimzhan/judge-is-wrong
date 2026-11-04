@@ -31,12 +31,19 @@ class ExecutionResult:
     duration_seconds: float
 
     @property
+    def oracle_valid(self) -> bool:
+        return not any(
+            self.status_counts.get(status, 0)
+            for status in ("unsupported_protocol", "integrity_violation", "controller_error")
+        )
+
+    @property
     def score(self) -> float:
         return self.passed / self.total if self.total else 0.0
 
     @property
     def all_passed(self) -> bool:
-        return self.total > 0 and self.passed == self.total
+        return self.oracle_valid and self.total > 0 and self.passed == self.total
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +53,8 @@ class ExecutionResult:
             "duration_seconds": self.duration_seconds,
             "score": self.score,
             "all_passed": self.all_passed,
+            "oracle_valid": self.oracle_valid,
+            "protocol": "function-rpc-v1",
         }
 
 
@@ -130,7 +139,7 @@ class Executor:
                 "-P",
                 "-s",
                 "-S",
-                str(directory / "worker.py"),
+                str(directory / "candidate.py"),
             ]
         # Never auto-pull images (a run should not silently use the network).
         command = [
@@ -160,7 +169,7 @@ class Executor:
             "-s",
             "-S",
         ]
-        return command + (["-c", "print('isolated')"] if probe else ["/work/worker.py"])
+        return command + (["-c", "print('isolated')"] if probe else ["/work/candidate.py"])
 
     def check_available(self) -> None:
         if self._checked:
@@ -204,13 +213,25 @@ class Executor:
         self.check_available()
         started = time.monotonic()
         statuses: Counter[str] = Counter()
-        worker = Path(__file__).with_name("_worker.py").read_text(encoding="utf-8")
+        source_dir = Path(__file__).parent
         for case in tests:
             with tempfile.TemporaryDirectory(prefix="judge-is-wrong-") as name:
-                directory = Path(name).resolve()
-                directory.chmod(0o777)
-                (directory / "worker.py").write_text(worker, encoding="utf-8")
-                verdict = directory / "verdict.json"
+                root = Path(name).resolve()
+                candidate_dir, controller_dir = root / "candidate", root / "controller"
+                candidate_dir.mkdir(mode=0o777)
+                candidate_dir.chmod(0o777)
+                controller_dir.mkdir(mode=0o700)
+                root.chmod(0o755)
+                for source, destination in (
+                    ("_candidate.py", candidate_dir / "candidate.py"),
+                    ("_codec.py", candidate_dir / "_codec.py"),
+                    ("_policy.py", candidate_dir / "_policy.py"),
+                    ("_worker.py", controller_dir / "controller.py"),
+                    ("_codec.py", controller_dir / "_codec.py"),
+                    ("_policy.py", controller_dir / "_policy.py"),
+                ):
+                    destination.write_bytes((source_dir / source).read_bytes())
+                verdict = controller_dir / "verdict.json"
                 nonce = secrets.token_hex(32)
                 container_name = f"judge-is-wrong-{secrets.token_hex(12)}"
                 payload = json.dumps(
@@ -221,14 +242,19 @@ class Executor:
                         "timeout_seconds": self.timeout_seconds,
                         "memory_mb": self.memory_mb,
                         "nonce": nonce,
-                        "verdict_path": str(verdict)
-                        if self.backend == "macos"
-                        else "/work/verdict.json",
+                        "verdict_path": str(verdict),
+                        "candidate_directory": str(candidate_dir),
+                        "candidate_command": self._command(
+                            candidate_dir, container_name=container_name
+                        ),
                     }
                 ).encode()
+                # Only this trusted, short-lived subprocess sees test source and verdict state.
+                # It may import installed trusted test dependencies (e.g. NumPy); candidate
+                # Python still uses -P -s -S inside the OS sandbox.
                 with subprocess.Popen(
-                    self._command(directory, container_name=container_name),
-                    cwd=directory,
+                    [sys.executable, "-P", "-s", str(controller_dir / "controller.py")],
+                    cwd=controller_dir,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -236,19 +262,20 @@ class Executor:
                     start_new_session=True,
                 ) as process:
                     try:
-                        startup_allowance = 5 if self.backend == "docker" else 0.5
+                        startup_allowance = 7 if self.backend == "docker" else 1.5
                         process.communicate(
                             payload, timeout=self.timeout_seconds + startup_allowance
                         )
                     except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
                         process.communicate()
                         statuses["timeout"] += 1
                         continue
                     finally:
                         if self.backend == "docker":
-                            # Killing only the Docker CLI can leave its container
-                            # alive. Force removal also kills any candidate children.
                             subprocess.run(
                                 ["docker", "rm", "-f", container_name],
                                 stdout=subprocess.DEVNULL,
@@ -260,7 +287,11 @@ class Executor:
                         statuses["timeout"] += 1
                         continue
                     try:
-                        result = json.loads(verdict.read_text(encoding="utf-8"))
+                        with verdict.open("rb") as handle:
+                            raw = handle.read(1025)
+                        if len(raw) > 1024:
+                            raise ValueError("Oversize verdict")
+                        result = json.loads(raw)
                         status = result["status"]
                         if (
                             result.get("nonce") != nonce
@@ -272,12 +303,15 @@ class Executor:
                                 "syntax_error",
                                 "runtime_error",
                                 "timeout",
+                                "unsupported_protocol",
+                                "integrity_violation",
+                                "controller_error",
                             }
                             or process.returncode != 0
                         ):
-                            status = "runtime_error"
+                            status = "controller_error"
                     except (OSError, ValueError, KeyError, TypeError):
-                        status = "runtime_error"
+                        status = "controller_error"
                     statuses[status] += 1
         return ExecutionResult(
             len(tests), statuses.get("passed", 0), dict(statuses), time.monotonic() - started

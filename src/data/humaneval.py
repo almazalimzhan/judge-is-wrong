@@ -21,7 +21,14 @@ def _public_examples(prompt: str) -> tuple[TestCase, ...]:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         doc = ast.get_docstring(node) or ""
-        for example in doctest.DocTestParser().get_examples(doc):
+        try:
+            examples = doctest.DocTestParser().get_examples(doc)
+        except ValueError:
+            # Some upstream docstrings contain escaped newlines that become
+            # malformed doctests after parsing. Preserve the public prompt and
+            # report zero executable examples, never manufacture evidence.
+            continue
+        for example in examples:
             try:
                 ast.parse(example.source.strip(), mode="eval")
                 expected = ast.literal_eval(example.want.strip())

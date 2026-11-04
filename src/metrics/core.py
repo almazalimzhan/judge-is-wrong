@@ -34,6 +34,29 @@ def normalized_rows(rows: Iterable[Row]) -> list[Row]:
     result = []
     for row in rows:
         item = dict(row)
+        # Unsupported or suspicious executions do not supply a valid correctness label.
+        if not as_bool(row.get("ground_truth_valid", True)):
+            raise ValueError(
+                "Invalid hidden-test oracle: inspect execution coverage before analysis"
+            )
+        hidden = row.get("hidden_test_result", {})
+        if isinstance(hidden, str):
+            hidden = json.loads(hidden or "{}")
+        if isinstance(hidden, dict):
+            if not as_bool(hidden.get("oracle_valid", True)):
+                raise ValueError("Invalid hidden-test oracle in execution summary")
+            counts = hidden.get("status_counts", {})
+            invalid_statuses = {"unsupported_protocol", "integrity_violation", "controller_error"}
+            if isinstance(counts, dict) and any(
+                counts.get(status, 0) for status in invalid_statuses
+            ):
+                raise ValueError(
+                    "Suspicious or unsupported hidden execution cannot be analyzed as correctness"
+                )
+        replicate = row.get("replicate", 0)
+        if isinstance(replicate, bool) or int(replicate) < 0 or float(replicate) != int(replicate):
+            raise ValueError("replicate must be a nonnegative integer")
+        item["replicate"] = int(replicate)
         item["judge_score"] = _probability(row["judge_score"], "judge_score")
         item["ground_truth_score"] = _probability(row["ground_truth_score"], "ground_truth_score")
         item["judge_binary"] = as_bool(row["judge_binary"])
@@ -155,6 +178,7 @@ def compute_metrics(rows: Iterable[Row], n_bins: int = 10) -> Row:
         "approved_error_fraction": _divide(fp, fp + tp),
         "false_positive_fraction": _divide(fp, n),
         "accuracy": _divide(tp + tn, n),
+        "binary_prediction_error": _divide(fp + fn, n),
         "precision": _divide(tp, tp + fp),
         "recall": _divide(tp, tp + fn),
         "f1": _divide(2 * tp, 2 * tp + fp + fn),

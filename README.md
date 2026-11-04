@@ -38,7 +38,37 @@ flowchart LR
 
 Each task starts from **one shared initial candidate** across conditions. Each condition then has its own revision trajectory. T revisions means rounds `0..T`, including initial evaluation. All feedback available to the proposer is restricted to public task information, previous candidate code, judge scores, and concise judge/critic summaries. Hidden outcomes never guide revisions, candidate selection, stopping, or model calls. Every candidate is retained, including the last revision; there is no hidden-test best-of-N selection.
 
+`replicates` (default 1) adds independently seeded proposer trajectories per task.
+Every replicate has a distinct `replicate_seed` and model-call namespace; its
+initial candidate is shared across conditions **within that replicate**. Dataset
+sampling and public/hidden splits stay fixed across replicates. Provider seeds
+are best-effort, and independent calls can return identical solutions. Task-level
+cluster bootstrap keeps every replicate together; replicate count is never
+reported as task count. Analyses require the same balanced task × replicate grid
+for every condition.
+
 A `baseline_no_feedback` control receives its previous code and a generic revision request, with the same number of proposer calls but no evaluator feedback. All conditions still receive evaluation. This control helps distinguish evaluator feedback from additional revision effort. Different feedback lengths and evaluator call counts remain resource confounds. Endpoint comparisons measure the **combined judging-and-revision intervention**; they do not isolate judgment quality on a fixed candidate distribution. Shared round-0 candidates provide a limited fixed-candidate comparison. Randomize condition order per task deterministically to reduce order confounds.
+
+### Separate frozen-candidate experiment
+
+Freeze **every** initial candidate from a completed run with
+`scripts/freeze_candidates.py`. The corpus records candidate and public-task
+hashes and strips evaluator feedback and hidden outcomes. A separate
+`scripts/run_frozen_evaluation.py` command makes **no proposer calls** and permits
+no revisions: baseline, adversarial critique, ensemble, and execution-evidence
+judges score the exact same candidate corpus. Each candidate's execution outcome
+is computed once and shared across conditions.
+
+Frozen results have `experiment_type: frozen_candidates`, their own manifest and
+`latest_frozen.csv`, and a separate analyzer/report under `reports/frozen/`.
+Analysis rejects condition sets that differ in code hashes, task bindings, or
+ground truth. It exports task-cluster paired differences in Brier score,
+conditional false approval, 10-bin ECE, signed binary calibration bias, and
+binary prediction error (`1 − accuracy`). ECE and false approval are recomputed
+within each bootstrap sample, rather than averaging per-task ratios. These
+comparisons address **evaluator quality on the prespecified corpus**. Iterative
+comparisons continue to address feedback policies and changing trajectories;
+the two experiment types cannot be pooled.
 
 ### Dataset and information boundary
 
@@ -47,6 +77,12 @@ The primary benchmark is [MBPP](https://github.com/google-research/google-resear
 MBPP's tests are public benchmark data, not confidential or guaranteed unseen by pretrained models. Here “hidden” means withheld from this experiment's prompts. The adapter deterministically selects one public test and holds out the remainder. This is a constructed split, not the original benchmark protocol; with two hidden tests, G is coarse. Public signatures come from function definitions without their bodies. See [dataset protocol](docs/datasets.md) for the exact hash rule, setup handling, filtering, and HumanEval's whole-harness binary scoring. Never compare these modified scores directly with official benchmark leaderboards.
 
 Ten original toy tasks support offline development. Their purpose is to test the software; they are not a substitute for benchmark results.
+
+An optional [`humaneval_plus` protocol](docs/datasets.md) uses the pinned
+HumanEval+ v0.1.10 expanded harness from EvalPlus. No tests are generated from
+failures observed in this project. Run reference and protocol-compatibility
+preflight before choosing the confirmatory sample; never silently score an
+unsupported interaction as a valid oracle result.
 
 ## Hypotheses
 
@@ -81,7 +117,7 @@ All scores are on `[0,1]`. The CLI writes the requested concise summary with tas
 - **Calibration:** Brier `mean((J−Y)²)`, ECE with 10 equal-width bins, and reliability curves target Y, not G. Bin counts are exported.
 - **Classification:** accuracy, precision, recall, F1, tie-aware ROC-AUC and average precision (the chosen PR-AUC convention). Undefined denominators and one-class AUCs are missing, never replaced by perfect scores or zeros.
 - **Trajectories:** ΔJ, ΔG, ΔE and fractions with J increasing while G decreases, stays unchanged, or increases. Zero comparisons use a documented numerical tolerance.
-- **Uncertainty:** resample tasks, not individual rounds. All rounds and conditions for a sampled task stay paired. Summary tables use each trajectory's final round; round curves use one observation per task and round. Paired condition deltas and standardized paired effects are exported; degenerate effect sizes are missing. Percentile bootstrap intervals are exploratory, not multiple-testing-corrected significance claims. Small samples and sparse class denominators can produce unstable or unavailable intervals.
+- **Uncertainty:** resample tasks, not individual rounds or replicates. All rounds, replicates and conditions for a sampled task stay paired. Summary tables use each trajectory's final round; balanced replicate counts give each task equal weight. Paired condition deltas and standardized paired effects are exported; degenerate effect sizes are missing. Percentile bootstrap intervals are exploratory, not multiple-testing-corrected significance claims. Small samples and sparse class denominators can produce unstable or unavailable intervals.
 
 ## Reproduction
 
@@ -103,23 +139,71 @@ python scripts/analyze_results.py --results results/latest.csv
 python scripts/generate_report.py --results results/latest.csv
 ```
 
+Offline validation of the separate frozen comparison (mock models only):
+
+```bash
+python scripts/run_smoke_test.py --output-dir results/frozen-smoke-source
+python scripts/freeze_candidates.py --results results/frozen-smoke-source/results.csv --output data/mock_frozen.jsonl
+python scripts/run_frozen_evaluation.py --config configs/frozen_mock.yaml --corpus data/mock_frozen.jsonl
+python scripts/analyze_results.py --results results/latest_frozen.csv
+```
+
+Choose a new source output directory for each smoke run; completed experiments
+are not overwritten. The smoke experiment exercises two proposer replicates.
+
 The bundled `.yaml` files use JSON syntax, a valid YAML subset, to keep the smoke path dependency-free. Arbitrary YAML requires the `[yaml]` extra. CSV is the dependency-free default; choose `output_format: "parquet"` with `[parquet]` installed to use `results/latest.parquet` with the same analysis/report commands.
 
 ### First real experiment
 
-First verify one real-model task to catch endpoint or JSON incompatibilities:
+First use the small operational HumanEval+ pilot (3 tasks, 2 proposer replicates, 1 revision)
+to catch endpoint, protocol and JSON incompatibilities:
 
 ```bash
 cp .env.example .env
 # Fill LLM_API_BASE, LLM_API_KEY, PROPOSER_MODEL, JUDGE_MODEL, CRITIC_MODEL.
-python scripts/download_data.py --dataset mbpp
-python scripts/validate_dataset.py --config configs/first_real.yaml
-python scripts/run_experiment.py --config configs/first_real.yaml --limit 1 --rounds 1
+python scripts/download_data.py --dataset humaneval_plus
+python scripts/validate_dataset.py --config configs/first_real_pilot.yaml
+python scripts/run_experiment.py --config configs/first_real_pilot.yaml
 ```
 
-Then freeze model versions and the config, inspect public/hidden boundaries and the pilot logs, and run:
+With these exact pilot settings there are about 132 model requests without
+cache hits/retries. This is a software/protocol pilot, not a meaningful sample
+for hypothesis confirmation. No paid calls were made during implementation.
+
+Then freeze all six initial candidates and evaluate the judges separately (42
+additional judge/critic requests with N=3):
 
 ```bash
+python scripts/freeze_candidates.py --results results/latest.csv --output data/frozen_candidates.jsonl
+python scripts/run_frozen_evaluation.py --config configs/frozen.yaml --corpus data/frozen_candidates.jsonl
+python scripts/analyze_results.py --results results/latest_frozen.csv
+python scripts/generate_report.py --results results/latest_frozen.csv
+```
+
+The frozen config uses the same HumanEval+ sample as the recommended pilot. It must use the same task sample, split seed and public problem
+bindings as the source corpus. Use the optional stronger suite in a separate
+study:
+
+```bash
+python scripts/download_data.py --dataset humaneval_plus
+python scripts/validate_dataset.py --config configs/stronger_suite.yaml
+```
+
+Do not proceed to real-model evaluation when reference preflight reports oracle
+or protocol failures. Freeze any task exclusions before observing proposer
+outcomes and report eligibility/coverage alongside correctness.
+
+Before a larger study, freeze model versions, task eligibility and the config.
+The historical `first_real.yaml` retains the original 75-task MBPP design, but
+some MBPP references mutate inputs and are unsupported by the stricter value
+protocol. Its reference preflight may fail; do not bypass this or interpret
+unsupported rows as incorrect. Use a prespecified compatible sample or expand
+the validated HumanEval+ pilot in a separate configuration. For an eligible
+MBPP sample, the existing commands remain:
+
+```bash
+python scripts/download_data.py --dataset mbpp
+python scripts/validate_dataset.py --config configs/first_real.yaml
 python scripts/run_experiment.py --config configs/first_real.yaml
 python scripts/analyze_results.py --results results/latest.csv --bootstrap-samples 2000
 python scripts/generate_report.py --results results/latest.csv
@@ -131,7 +215,7 @@ development platform. The original tests are unchanged. All 75 replacement-sampl
 reference solutions passed preflight; revalidate on your runtime. Exclusions are
 based on reference behavior before any proposer outcomes; details are in the
 dataset protocol. The full first run uses approximately 3,600 model requests
-without cache hits or retries, so run the one-task pilot first.
+without cache hits or retries, so run the small operational pilot first.
 
 The initial meaningful config uses 75 tasks, three revisions, baseline/adversarial/ensemble/execution plus the revision control. No provider is hard-coded. API settings are in `.env`, shared model defaults in `configs/models.yaml`, and experiment overrides in `configs/first_real.yaml`. Optional role-specific endpoints and keys permit cross-provider comparisons. OpenAI-compatible means the `/chat/completions` message/response schema; provider-specific token/temperature support may need configuration. Local compatible servers may use a placeholder key. No model fine-tuning occurs: “learn” here means in-context iterative revision.
 
@@ -160,8 +244,9 @@ Automatically flag `J≥0.8` and `G≤0.5`; export task, candidate, judge justif
 - LLM-as-judge is not equivalent to human oversight. Rising J with flat G does not demonstrate deception or intent.
 - Small samples, coarse hidden tests, task selection, multiple comparisons and provider nondeterminism limit generalization.
 - Critique/ensemble conditions consume additional inference. Comparison is not compute matched. Different conditions can produce different candidate distributions.
-- No-feedback revision is a useful control, not a full causal identification strategy; repeat seeds and evaluate a frozen candidate corpus before making stronger claims.
-- Sandboxed Python execution is not a hardened adversarial evaluation service. Candidate/test co-location permits interpreter introspection or verdict tampering by sufficiently malicious code. Review [execution limitations](docs/execution.md) before running arbitrary code.
+- No-feedback revision is a useful control, not a full causal identification strategy; replicated runs and the frozen comparison address different uncertainty and distributional questions.
+- Trusted test state and verdicts are separated from candidate execution through a bounded value protocol. This supports a specified subset of Python function-call semantics, not arbitrary Python interoperability. Unsupported values/side effects and integrity violations are flagged, and invalid oracle rows cannot enter correctness analysis. OS escape, native-code attacks and resource exhaustion remain unsupported threat models; see [execution limitations](docs/execution.md).
+- The candidate-side transport uses Python too. Conservative source/import restrictions and audit hooks reject known interference patterns; unrestricted adversarial Python and obfuscated bypasses are outside the supported threat model. Argument mutation is unsupported, so some otherwise-correct MBPP references are ineligible. Run preflight and report coverage before choosing tasks; policy rejection must never become an ordinary incorrect label.
 - A small benchmark may have ceiling effects. Null findings do not establish reliable oversight. More reliable hidden suites, contamination checks, independent evaluation and replication are needed.
 
 ## Relation to AI oversight research
@@ -170,7 +255,7 @@ This is a small replication-style empirical probe, not a novelty claim. Weak sup
 
 ## Future work
 
-Evaluate weak versus independently stronger judges and same-family versus cross-family ensembles; cross-evaluate a fixed candidate corpus; test prompt robustness; repeat seeds; compute-match interventions; add larger hidden suites; use blinded human failure annotations; examine score-history ablations. All are follow-up studies, not completed claims.
+Evaluate weak versus independently stronger judges and same-family versus cross-family ensembles; test prompt robustness; compute-match interventions; use blinded human failure annotations; examine score-history ablations. Frozen-candidate comparisons, seeded proposer replicates and an optional expanded suite are implemented protocols; their real-model results remain pending.
 
 ## Citation
 

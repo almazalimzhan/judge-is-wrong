@@ -26,7 +26,7 @@ def main() -> None:
     cfg = load_config(args.config)
     dataset = cfg["dataset"]
     name = dataset["name"]
-    if name not in {"mbpp", "humaneval"}:
+    if name not in {"mbpp", "humaneval", "humaneval_plus"}:
         parser.error("Reference validation supports MBPP and HumanEval local benchmark files")
     path = ROOT / dataset["path"]
     if dataset.get("sha256") and hashlib.sha256(path.read_bytes()).hexdigest() != dataset["sha256"]:
@@ -60,24 +60,34 @@ def main() -> None:
                 "task_id": task.task_id,
                 "public": public.to_dict(),
                 "hidden": hidden.to_dict(),
-                "reference_valid": (public.total == 0 or public.all_passed) and hidden.all_passed,
+                "reference_valid": (public.total == 0 or public.all_passed)
+                and hidden.all_passed
+                and public.oracle_valid
+                and hidden.oracle_valid,
+                "oracle_valid": public.oracle_valid and hidden.oracle_valid,
             }
         )
     report = {
         "kind": "reference_sanity_check_not_model_experiment",
         "seed": cfg.get("seed", 42),
         "n_tasks": len(tasks),
-        "n_reference_failures": sum(not r["reference_valid"] for r in outcomes),
+        "n_reference_failures": sum(
+            r["oracle_valid"] and not r["reference_valid"] for r in outcomes
+        ),
+        "n_protocol_invalid": sum(not r["oracle_valid"] for r in outcomes),
+        "dataset_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "execution_backend": executor.backend,
         "excluded_task_ids": dataset.get("exclude_task_ids", []),
         "outcomes": outcomes,
-        "policy": "No automatic exclusions: inspect failures and freeze any exclusion list before real runs.",
+        "policy": "No automatic exclusions: inspect failures and unsupported protocol cases; freeze exclusions before real runs.",
     }
     destination = ROOT / "data" / f"{name}.validation.json"
     write_json(destination, report)
     print(
-        f"Validated {len(tasks)} tasks; reference failures={report['n_reference_failures']}. Details: {destination}"
+        f"Validated {len(tasks)} tasks; reference failures={report['n_reference_failures']}; "
+        f"oracle/protocol invalid={report['n_protocol_invalid']}. Details: {destination}"
     )
-    if report["n_reference_failures"]:
+    if report["n_reference_failures"] or report["n_protocol_invalid"]:
         raise SystemExit(1)
 
 

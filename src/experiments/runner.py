@@ -42,6 +42,12 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def derive_replicate_seed(seed: int, replicate: int) -> int:
+    """Stable seed streams, distinct from the fixed dataset/split seed."""
+    digest = hashlib.sha256(f"proposer-replicate-v1|{seed}|{replicate}".encode()).hexdigest()
+    return int(digest[:16], 16) % (2**31 - 1)
+
+
 def resolve_config(config: dict[str, Any], root: Path) -> dict[str, Any]:
     resolved = dict(config)
     model_file = root / str(config.get("models_file", "configs/models.yaml"))
@@ -60,6 +66,10 @@ def resolve_config(config: dict[str, Any], root: Path) -> dict[str, Any]:
         raise ValueError("rounds is the number of revisions and must be nonnegative")
     if resolved.get("output_format", "csv") not in {"csv", "parquet"}:
         raise ValueError("output_format must be csv or parquet")
+    replicates = resolved.get("replicates", 1)
+    if isinstance(replicates, bool) or not isinstance(replicates, int) or replicates < 1:
+        raise ValueError("replicates must be a positive integer")
+    resolved["replicates"] = replicates
     resolved["conditions"] = conditions
     return resolved
 
@@ -75,7 +85,14 @@ def run_experiment(
     root = root.resolve()
     load_dotenv(root / ".env")
     cfg = resolve_config(config, root)
+    if cfg.get("experiment_type", "iterative") != "iterative":
+        raise ValueError(
+            "run_experiment handles iterative trajectories; use the frozen-candidate CLI"
+        )
     seed = int(cfg.get("seed", 42))
+    replicate_seeds = [
+        derive_replicate_seed(seed, replicate) for replicate in range(cfg["replicates"])
+    ]
     rounds = int(cfg.get("rounds", 3))
     dataset = cfg.get("dataset", {"name": "toy", "limit": 10})
     name = str(dataset["name"])
@@ -106,17 +123,28 @@ def run_experiment(
     executor = Executor(**cfg.get("execution", {}))
     # Check before any paid model request. There is no unsafe execution fallback.
     executor.check_available()
-    model = build_model(cfg["models"], root / cfg.get("cache_dir", ".cache/model_calls"), seed)
+    models = [
+        build_model(
+            cfg["models"], root / cfg.get("cache_dir", ".cache/model_calls"), replicate_seed
+        )
+        for replicate_seed in replicate_seeds
+    ]
+    model = models[0]
     temperatures = cfg.get("temperatures", {})
-    evaluator = Evaluator(
-        model,
-        ensemble_size=int(cfg.get("ensemble_size", 3)),
-        judge_temperature=float(temperatures.get("judge", 0.0)),
-        critic_temperature=float(temperatures.get("critic", 0.0)),
-        ensemble_temperature=float(temperatures.get("ensemble", 0.7)),
-        ensemble_models=cfg.get("ensemble_models"),
-    )
-    proposer = Proposer(model, temperature=float(temperatures.get("proposer", 0.2)))
+    evaluators = [
+        Evaluator(
+            model,
+            ensemble_size=int(cfg.get("ensemble_size", 3)),
+            judge_temperature=float(temperatures.get("judge", 0.0)),
+            critic_temperature=float(temperatures.get("critic", 0.0)),
+            ensemble_temperature=float(temperatures.get("ensemble", 0.7)),
+            ensemble_models=cfg.get("ensemble_models"),
+        )
+        for model in models
+    ]
+    proposers = [
+        Proposer(model, temperature=float(temperatures.get("proposer", 0.2))) for model in models
+    ]
     sources = {
         str(p.relative_to(root)): _sha(p)
         for base in ("src", "scripts", "configs")
@@ -127,6 +155,7 @@ def run_experiment(
         "experiment_id": identifier,
         "status": "running",
         "run_kind": kind,
+        "experiment_type": "iterative",
         "started_at": utc_now(),
         "config": redact_config(cfg),
         "config_sha256": hashlib.sha256(
@@ -135,6 +164,9 @@ def run_experiment(
         "python": sys.version,
         "platform": platform.platform(),
         "seed": seed,
+        "replicates": cfg["replicates"],
+        "replicate_seeds": replicate_seeds,
+        "replicate_seed_policy": "SHA256(proposer-replicate-v1|dataset_seed|replicate), with task-specific draw namespaces; remote providers need not honor seeds",
         "installed_packages": {
             d.metadata["Name"]: d.version
             for d in importlib.metadata.distributions()
@@ -146,95 +178,114 @@ def run_experiment(
         "task_ids": [task.task_id for task in tasks],
         "execution_backend": executor.backend,
         "round_convention": "0 is initial; T is final after T revisions",
-        "expected_rows": len(tasks) * len(cfg["conditions"]) * (rounds + 1),
+        "expected_rows": len(tasks) * cfg["replicates"] * len(cfg["conditions"]) * (rounds + 1),
     }
     write_json(run_dir / "manifest.json", manifest)
     rows: list[dict] = []
     execution_cache: dict[tuple[str, str], tuple[Any, Any]] = {}
     try:
         for index, task in enumerate(tasks):
-            initial = proposer.generate(task, [], call_id=f"task/{task.task_id}/initial")
-            order = list(cfg["conditions"])
-            random.Random(f"{seed}/{task.task_id}").shuffle(order)
-            for condition in order:
-                candidate = initial
-                history: list[dict] = []
-                trajectory: list[dict] = []
-                for round_index in range(rounds + 1):
-                    if round_index:
-                        candidate = proposer.generate(
+            for replicate, (proposer, evaluator) in enumerate(
+                zip(proposers, evaluators, strict=True)
+            ):
+                initial = proposer.generate(
+                    task, [], call_id=f"replicate/{replicate}/task/{task.task_id}/initial"
+                )
+                order = list(cfg["conditions"])
+                random.Random(f"{seed}/{task.task_id}/{replicate}").shuffle(order)
+                for condition in order:
+                    candidate = initial
+                    history: list[dict] = []
+                    trajectory: list[dict] = []
+                    for round_index in range(rounds + 1):
+                        if round_index:
+                            candidate = proposer.generate(
+                                task,
+                                history,
+                                call_id=f"replicate/{replicate}/task/{task.task_id}/{condition}/revision/{round_index}",
+                            )
+                        fingerprint = hashlib.sha256(candidate.encode()).hexdigest()
+                        execution_key = (task.task_id, fingerprint)
+                        if execution_key not in execution_cache:
+                            execution_cache[execution_key] = (
+                                executor.run(candidate, task.public_tests),
+                                executor.run(candidate, task.hidden_tests),
+                            )
+                        public, hidden = execution_cache[execution_key]
+                        decision = evaluator.evaluate(
                             task,
-                            history,
-                            call_id=f"task/{task.task_id}/{condition}/revision/{round_index}",
+                            candidate,
+                            "baseline" if condition == "baseline_no_feedback" else condition,
+                            public_result=public,
+                            call_id=f"replicate/{replicate}/task/{task.task_id}/{condition}/round/{round_index}",
                         )
-                    fingerprint = hashlib.sha256(candidate.encode()).hexdigest()
-                    execution_key = (task.task_id, fingerprint)
-                    if execution_key not in execution_cache:
-                        execution_cache[execution_key] = (
-                            executor.run(candidate, task.public_tests),
-                            executor.run(candidate, task.hidden_tests),
+                        outcome = decision.to_dict()
+                        row = {
+                            "experiment_id": identifier,
+                            "run_kind": kind,
+                            "task_id": task.task_id,
+                            "condition": condition,
+                            "round": round_index,
+                            "seed": seed,
+                            "replicate": replicate,
+                            "replicate_seed": replicate_seeds[replicate],
+                            "experiment_type": "iterative",
+                            "ground_truth_valid": hidden.oracle_valid,
+                            "ground_truth_protocol": task.metadata.get("split", "unspecified"),
+                            "public_task_sha256": hashlib.sha256(
+                                json.dumps(
+                                    task.public_view(), sort_keys=True, separators=(",", ":")
+                                ).encode()
+                            ).hexdigest(),
+                            "problem": task.problem,
+                            "candidate_code": candidate,
+                            **outcome,
+                            "public_test_result": public.to_dict(),
+                            "hidden_test_result": hidden.to_dict(),
+                            "ground_truth_score": hidden.score,
+                            "pass_at_1": hidden.all_passed,
+                            "evaluation_gap": decision.judge_score - hidden.score,
+                            "candidate_sha256": fingerprint,
+                            "timestamp": utc_now(),
+                        }
+                        rows.append(row)
+                        trajectory.append(row)
+                        if condition == "baseline_no_feedback":
+                            history.append({"candidate_code": candidate, "round": round_index})
+                        else:
+                            history.append(
+                                {
+                                    "candidate_code": candidate,
+                                    "round": round_index,
+                                    "judge_score": decision.judge_score,
+                                    "judge_binary": decision.judge_binary,
+                                    "judge_reasoning_summary": decision.judge_reasoning_summary,
+                                    "critic_feedback": decision.critic_feedback,
+                                }
+                            )
+                        # Incremental outputs preserve completed work after an interrupted API call.
+                        write_results(run_dir / "partial.csv", rows)
+                        safe_task = hashlib.sha256(task.task_id.encode()).hexdigest()[:16]
+                        write_json(
+                            run_dir
+                            / "trajectories"
+                            / f"{safe_task}-replicate-{replicate}-{condition}.json",
+                            trajectory,
                         )
-                    public, hidden = execution_cache[execution_key]
-                    decision = evaluator.evaluate(
-                        task,
-                        candidate,
-                        "baseline" if condition == "baseline_no_feedback" else condition,
-                        public_result=public,
-                        call_id=f"task/{task.task_id}/{condition}/round/{round_index}",
-                    )
-                    outcome = decision.to_dict()
-                    row = {
-                        "experiment_id": identifier,
-                        "run_kind": kind,
-                        "task_id": task.task_id,
-                        "condition": condition,
-                        "round": round_index,
-                        "seed": seed,
-                        "replicate": 0,
-                        "problem": task.problem,
-                        "candidate_code": candidate,
-                        **outcome,
-                        "public_test_result": public.to_dict(),
-                        "hidden_test_result": hidden.to_dict(),
-                        "ground_truth_score": hidden.score,
-                        "pass_at_1": hidden.all_passed,
-                        "evaluation_gap": decision.judge_score - hidden.score,
-                        "candidate_sha256": fingerprint,
-                        "timestamp": utc_now(),
-                    }
-                    rows.append(row)
-                    trajectory.append(row)
-                    if condition == "baseline_no_feedback":
-                        history.append({"candidate_code": candidate, "round": round_index})
-                    else:
-                        history.append(
+                    LOGGER.info(
+                        json.dumps(
                             {
-                                "candidate_code": candidate,
-                                "round": round_index,
-                                "judge_score": decision.judge_score,
-                                "judge_binary": decision.judge_binary,
-                                "judge_reasoning_summary": decision.judge_reasoning_summary,
-                                "critic_feedback": decision.critic_feedback,
+                                "event": "trajectory_complete",
+                                "replicate": replicate,
+                                "replicate_seed": replicate_seeds[replicate],
+                                "task": task.task_id,
+                                "condition": condition,
+                                "task_index": index + 1,
+                                "task_count": len(tasks),
+                                "run_kind": kind,
                             }
                         )
-                    # Incremental outputs preserve completed work after an interrupted API call.
-                    write_results(run_dir / "partial.csv", rows)
-                    safe_task = hashlib.sha256(task.task_id.encode()).hexdigest()[:16]
-                    write_json(
-                        run_dir / "trajectories" / f"{safe_task}-{condition}.json", trajectory
                     )
-                LOGGER.info(
-                    json.dumps(
-                        {
-                            "event": "trajectory_complete",
-                            "task": task.task_id,
-                            "condition": condition,
-                            "task_index": index + 1,
-                            "task_count": len(tasks),
-                            "run_kind": kind,
-                        }
-                    )
-                )
         suffix = cfg.get("output_format", "csv")
         destination = run_dir / f"results.{suffix}"
         write_results(destination, rows)

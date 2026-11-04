@@ -22,19 +22,29 @@ def main() -> None:
     cfg["models"] = {"backend": "mock"}
     cfg["ensemble_size"] = 3
     cfg["rounds"] = 2
+    cfg["replicates"] = 2
     output_dir = args.output_dir or ROOT / "results" / "smoke" / uuid4().hex[:8]
     path = run_experiment(cfg, ROOT, output_dir=output_dir, update_latest=False)
     rows = read_results(path)
-    assert len(rows) == 3 * len(cfg["conditions"]) * 3
+    assert len(rows) == 3 * cfg["replicates"] * len(cfg["conditions"]) * 3
+    assert {row["replicate"] for row in rows} == {0, 1}
+    assert len({row["replicate_seed"] for row in rows}) == 2
+    assert all(row["ground_truth_valid"] for row in rows)
     assert all(row["run_kind"] == "mock" for row in rows)
     assert {row["round"] for row in rows} == {0, 1, 2}
     assert any(row["ground_truth_score"] < 1 for row in rows)
     print("SMOKE PASSED — synthetic software validation; no research findings.")
-    print(f"Saved {len(rows)} rows: {path}")
+    print(
+        f"Saved {len(rows)} rows across {cfg['replicates']} independently seeded proposer replicates: {path}"
+    )
     example = [
-        r for r in rows if r["task_id"] == rows[0]["task_id"] and r["condition"] == "baseline"
+        r
+        for r in rows
+        if r["task_id"] == rows[0]["task_id"]
+        and r["condition"] == "baseline"
+        and r["replicate"] == 0
     ]
-    print("Example mock trajectory:")
+    print("Example mock trajectory (replicate 0):")
     for row in example:
         print(
             f"  round={row['round']} J={row['judge_score']:.3f} "

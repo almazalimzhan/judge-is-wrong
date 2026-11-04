@@ -24,3 +24,5 @@ reports/analysis.json
 reports/run_report.md
 .DS_Store
 reports/parquet-validation/
+reports/frozen/
+reports/review-validation/
