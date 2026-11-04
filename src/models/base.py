@@ -176,6 +176,8 @@ def build_model(config: dict[str, Any], cache_dir: Path, seed: int = 0) -> Cache
             max_tokens=int(config.get("max_tokens", 2048)),
             retries=int(config.get("retries", 2)),
             send_seed=bool(config.get("send_seed", False)),
+            local_only=bool(config.get("local_only", False)),
+            json_roles=bool(config.get("json_roles", False)),
         )
     else:
         raise ValueError(f"Unknown model backend: {backend_name}")
@@ -183,7 +185,7 @@ def build_model(config: dict[str, Any], cache_dir: Path, seed: int = 0) -> Cache
     for role in ("proposer", "judge", "critic"):
         model_name = (
             config.get(f"{role}_model")
-            if backend_name == "mock"
+            if backend_name == "mock" or config.get("local_only", False)
             else os.environ.get(f"{role.upper()}_MODEL") or config.get(f"{role}_model")
         )
         if not model_name:

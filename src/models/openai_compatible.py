@@ -8,13 +8,18 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener, urlopen
 
 from .base import ModelResponse
 
 
 class ModelAPIError(RuntimeError):
     pass
+
+
+class NoLocalRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ModelAPIError("Local-only mode refuses HTTP redirects")
 
 
 class OpenAICompatibleBackend:
@@ -27,29 +32,43 @@ class OpenAICompatibleBackend:
         max_tokens: int = 2048,
         retries: int = 2,
         send_seed: bool = False,
+        local_only: bool = False,
+        json_roles: bool = False,
     ) -> None:
         self.api_base = api_base.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.max_tokens = max_tokens
         self.retries = retries
         self.send_seed = send_seed
+        self.local_only = local_only
+        self.json_roles = json_roles
         if timeout_seconds <= 0 or max_tokens <= 0 or retries < 0:
             raise ValueError("Invalid API timeout, max_tokens, or retries")
 
     def cache_settings(self) -> dict[str, Any]:
         return {
-            "protocol_version": 1,
+            "protocol_version": 3 if self.json_roles else 1,
             "max_tokens": self.max_tokens,
             "send_seed": self.send_seed,
             "timeout_seconds": self.timeout_seconds,
             "retries": self.retries,
+            "local_only": self.local_only,
+            "json_roles": self.json_roles,
         }
 
     def endpoint(self, role: str) -> str:
-        base = os.environ.get(f"{role.upper()}_API_BASE", self.api_base).rstrip("/")
+        base = (
+            self.api_base
+            if self.local_only
+            else os.environ.get(f"{role.upper()}_API_BASE", self.api_base)
+        ).rstrip("/")
         parsed = urlparse(base)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("Set LLM_API_BASE (or role-specific API_BASE) to an HTTP(S) base URL")
+        if self.local_only and (
+            parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+        ):
+            raise ValueError("Local-only mode requires an explicit loopback HTTP endpoint")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("API base must not contain credentials, query, or fragment")
         return base if base.endswith("/chat/completions") else base + "/chat/completions"
@@ -70,9 +89,41 @@ class OpenAICompatibleBackend:
             "temperature": temperature,
             "max_tokens": self.max_tokens,
         }
+        if self.local_only:
+            body["stream"] = False
+        if self.json_roles and role in {"judge", "critic"}:
+            properties = (
+                {
+                    "probability_correct": {"type": "number", "minimum": 0, "maximum": 1},
+                    "approve": {"type": "boolean"},
+                    "justification": {"type": "string", "minLength": 1, "maxLength": 6000},
+                }
+                if role == "judge"
+                else {"summary": {"type": "string", "minLength": 1, "maxLength": 6000}}
+            )
+            body["response_format"] = {"type": "json_object"}
+            schema = {
+                "type": "object",
+                "properties": properties,
+                "required": list(properties),
+                "additionalProperties": False,
+            }
+            instruction = (
+                "Return JSON matching these exact field types. In particular summaries/justifications are strings, never objects or arrays. Schema: "
+                + json.dumps(schema)
+            )
+            body["messages"] = [dict(message) for message in messages]
+            if body["messages"] and body["messages"][0]["role"] == "system":
+                body["messages"][0]["content"] += "\n" + instruction
+            else:
+                body["messages"].insert(0, {"role": "system", "content": instruction})
         if self.send_seed:
             body["seed"] = seed
-        key = os.environ.get(f"{role.upper()}_API_KEY", os.environ.get("LLM_API_KEY", ""))
+        key = (
+            "ollama"
+            if self.local_only
+            else os.environ.get(f"{role.upper()}_API_KEY", os.environ.get("LLM_API_KEY", ""))
+        )
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if key:
             headers["Authorization"] = "Bearer " + key
@@ -81,7 +132,12 @@ class OpenAICompatibleBackend:
         )
         for attempt in range(self.retries + 1):
             try:
-                with urlopen(request, timeout=self.timeout_seconds) as handle:
+                opener = (
+                    build_opener(ProxyHandler({}), NoLocalRedirect()).open
+                    if self.local_only
+                    else urlopen
+                )
+                with opener(request, timeout=self.timeout_seconds) as handle:
                     # Bound provider responses; avoid accidental unbounded disk growth.
                     raw = handle.read(16 * 1024 * 1024 + 1)
                 if len(raw) > 16 * 1024 * 1024:

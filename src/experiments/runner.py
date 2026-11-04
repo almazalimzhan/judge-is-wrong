@@ -83,7 +83,7 @@ def run_experiment(
     update_latest: bool = True,
 ) -> Path:
     root = root.resolve()
-    load_dotenv(root / ".env")
+    load_dotenv(root / config.get("env_file", ".env"))
     cfg = resolve_config(config, root)
     if cfg.get("experiment_type", "iterative") != "iterative":
         raise ValueError(
@@ -143,7 +143,11 @@ def run_experiment(
         for model in models
     ]
     proposers = [
-        Proposer(model, temperature=float(temperatures.get("proposer", 0.2))) for model in models
+        Proposer(
+            model,
+            temperature=float(temperatures.get("proposer", 0.2)),
+        )
+        for model in models
     ]
     sources = {
         str(p.relative_to(root)): _sha(p)

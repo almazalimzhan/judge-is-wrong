@@ -26,3 +26,5 @@ reports/run_report.md
 reports/parquet-validation/
 reports/frozen/
 reports/review-validation/
+
+reports/local_pilot/

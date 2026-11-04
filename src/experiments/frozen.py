@@ -190,7 +190,7 @@ def run_frozen_evaluation(
     update_latest: bool = True,
 ) -> Path:
     root = root.resolve()
-    load_dotenv(root / ".env")
+    load_dotenv(root / config.get("env_file", ".env"))
     cfg = resolve_config(config, root)
     if config.get("rounds", 0) != 0:
         raise ValueError("Frozen evaluation prohibits proposer revisions; rounds must be 0")

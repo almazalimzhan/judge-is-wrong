@@ -271,3 +271,11 @@ Project citation (replace author/repository fields before public release):
 ```
 
 Benchmark attribution: Austin et al. (2021), [Program Synthesis with Large Language Models](https://arxiv.org/abs/2108.07732), MBPP (CC BY 4.0); Chen et al. (2021), [Evaluating Large Language Models Trained on Code](https://arxiv.org/abs/2107.03374), HumanEval (MIT). Code in this repository is MIT licensed; benchmark data retains its original license.
+
+### Zero-cost local Ollama pilot
+
+With Ollama already serving `llama3.2:3b`, run `python scripts/run_experiment.py --config configs/ollama_pilot.yaml` after reference preflight. This config fixes all roles to that model and enforces a loopback-only endpoint, disabling proxy/redirect and environment endpoint/model fallback. It uses ignored `.env.ollama` with the existing dotenv loader; existing user `.env` values need not be replaced.
+
+The local JSON mode requests `json_object` and supplies explicit role field types while keeping strict judge/critic parsing. Ollama 0.20.3 on the development host stopped its runner when asked for `json_schema`; this transport is therefore not used. Malformed responses abort rather than acquiring invented scores. Local same-model ensembles have correlated errors. The three-task pilot is operational validation; it cannot confirm the research hypotheses. Local execution reports and caches stay ignored under `reports/local_pilot/` and `.cache/ollama_pilot_calls/`.
+
+Local validation on 2026-11-04: 84 automated tests passed, and the real one-task/one-replicate baseline run completed through one revision. The larger local pilot stopped at 46/60 rows after malformed critic JSON; two earlier rows were oracle-invalid under the existing Python policy. No aggregate full-pilot or frozen findings are claimed. Resolve these compatibility blockers before treating this config as a reliable operational run; strict parsing and sandbox rules remain enabled.
